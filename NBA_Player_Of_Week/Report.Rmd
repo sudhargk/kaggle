@@ -1,0 +1,284 @@
+---
+title: "NBA Player of the Week"
+output: html_notebook
+---
+
+Library Used
+==============
+
+```{r}
+
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(ggrepel)
+library(ggalt)
+
+```
+
+
+Dataset
+========
+
+The data was scraped from Basketball real gm site, The idea of making this data set was to explore regular season domination. Whether the seniority / last contract year etc. has an affect on the long run.
+
+Pulling the CSV file from kaggle https://www.kaggle.com/jacobbaruch/nba-player-of-the-week,
+
+```{r}
+data <- read.csv("NBA_player_of_the_week 2.csv",stringsAsFactors = F)
+```
+
+Summary on Fields
+===================
+1. Age 
+
+We observe the following the dataset has age ranging from 19-40, this can be considered to be one of the important field as the user want to see if the seniority is having impact on the rewards at different conference.
+
+```{r}
+summary(data$Age)
+par(mfrow=c(1,2))
+hist(data$Age,xlab="Age",main="Histogram with Age")
+boxplot(data$Age,ylab="Age",main="Boxplot with Age")
+
+```
+Observe not many people at higher age can be found they show it to be outlier, but they are valid.
+
+
+2. Conference
+
+We observe lotsa of missing values for the conference nearly 384 samples are not having values. These values can be filled based on the Teams and Since Washington Bullets were renamed Washington Wizards in 1997, some of the values were missing.
+
+```{r}
+table(data$Conference)
+
+east_teams <- (data %>% filter(Conference=='East') %>% distinct(Team))$Team
+
+west_teams <- (data %>% filter(Conference=='West') %>% distinct(Team))$Team
+
+(data %>% filter(Team=='Washington Wizards' | Team=='Washington Bullets')%>%distinct(Conference))$Conference
+
+
+imputeConference <- function(conf,team){
+  if(conf==''){
+      if(team %in% east_teams || team =='Washington Bullets'){
+        return('East')
+      }
+      else if ( team %in% west_teams){
+        return('West')
+      }else{
+        return('')
+      }
+  }else{
+    return(conf)
+  }
+}
+conf <- mapply(imputeConference, data$Conference,data$Team)
+table(conf)
+
+data$Conference <- conf
+```
+3.Date 
+It is the awarded date for each of the player, they are in free text which needs to be converted to datatime using the lubridate function
+
+```{r}
+summary(data$Date)
+dt <-mdy(data$Date)
+summary(dt)
+data$Date <-dt
+
+```
+
+
+4.Draft.Year
+It defines the player drafted year. There is no data preparation required on this column
+
+```{r}
+summary(data$Draft.Year)
+
+```
+
+5. Height
+
+Height is defined in foot-inches, converting into cm
+
+```{r}
+str(data$Height)
+to_uniform_height <- function (input){
+  if(grepl('cm',input) == TRUE){
+    return (as.numeric(gsub('cm','',input)))  
+  }else{
+    val <- strsplit(input,split = '-')
+    return((as.numeric(val[[1]][1])*12+as.numeric(val[[1]][2]))*2.54)
+  }
+}
+
+ht <- mapply(to_uniform_height,data$Height)
+summary(ht)
+par(mfrow=c(1,2))
+hist(ht,xlab="Height (in cm)",main="Histogram with Height")
+boxplot(ht,ylab="Height (in cm)",main="Boxplot with Height")
+data$Height <-ht
+
+```
+
+6. Player
+
+It defines the player name, analyzing if the player names are missing, No rows are missing
+
+```{r}
+data %>% filter(Player=='' | is.na(Player)) %>% nrow()
+```
+
+7.Position
+It defines the posittion of the player, there are basically 5  common'[Basketball Positions](https://en.wikipedia.org/wiki/Basketball_positions),
+Here we are observing more positions, hence requires cleanup.
+C -> Center
+F -> Forward
+FC/F-C -> Forward Center
+G -> Guard
+GF/G-F -> Guard Forward
+PF -> Power Forward
+PG -> Power Guard
+SF -> Shooting Forward
+SG -> Shooting Guard
+
+```{r}
+position_map<-list('C'='Center','F'='Forward','FC'='Forward Center','F-C'='Forward Center','G'='Guard', 'GF'='Guard Forward','G-F'='Guard Forward','PF'='Power Forward','PG'='Power Guard', 'SF'='Shooting Forward', 'SG'='Shooting Guard')
+
+rename_position<-function(pos){
+  return(position_map[pos][[1]])
+}
+
+pos<-as.factor(mapply(rename_position,data$Position))
+
+summary(pos)
+data$Position <- pos
+
+```
+8.Season and Season.short
+
+Validating if the searson and season.short are correct for all scenarios.
+
+```{r}
+
+
+seasonEnd <-mapply(function(t) t[2],strsplit(data$Season,split='-'))
+data$Season <- as.factor(data$Season)
+all(seasonEnd==data$Season.short)
+summary(data$Season.short)
+```
+
+
+9. Weight
+
+Weight of the player are define in pounds, but for some of the observation values are defined in KG
+
+```{r}
+
+to_uniform_weight <- function (input){
+  if(grepl('kg',input) == TRUE){
+    return (as.numeric(gsub('kg','',input)))  
+  }else{
+    return(as.numeric(input)*0.453592)
+  }
+}
+wt <- mapply(to_uniform_weight,data$Weight)
+summary(wt)
+
+
+par(mfrow=c(1,2))
+hist(wt,xlab="Weight (in kgs)",main="Histogram with Weight")
+boxplot(wt,ylab="Weight (in kgs)",main="Boxplot with Weight")
+data$Weight<-wt
+
+hist(data$Seasons.in.league);
+```
+
+10. Real Value
+Number of awards in a season, there are two possible values  0.5 and 1. As per data dictionaty player either gets 0.5 if he winsawards on both East and West Conference.
+```{r}
+summary(as.factor(data$Real_value))
+```
+
+Correlation of # Awards with Height and Weight
+==================================
+
+Since BMI represents 
+```{r}
+
+report <- data%>% select(Player,Height,Weight,Position) %>% group_by(Player) %>% summarise(
+   ht = mean(Height),
+    wt = mean(Weight),
+    pos = first(Position),
+    num_awards = n()) %>% arrange(-num_awards);
+
+
+awards_per_pos <-report %>% group_by(pos) %>% summarise(num_awards=sum(num_awards))
+
+theme_set(theme_dark())
+ggplot(report,aes(x=pos)) + geom_violin(aes(y=ht),fill="red") +
+    geom_violin(aes(y=wt),fill="green") +
+    geom_bar(aes(y=num_awards,col=pos),fill="black",stat="summary",fun.y="sum",width=0.3,alpha=0.4) + 
+    geom_text(data=awards_per_pos,aes(y=50,label=num_awards)) +
+    theme(axis.text.x = element_text(angle=65, vjust=0.6)) +labs(x = "Positions",y = "Weight / Height / Count of Awards");
+       
+```
+
+
+
+```{r}
+theme_set(theme_dark())
+set.seed(71093)
+df <-data.frame(list(ht=report$ht,wt=report$wt,awards=report$num_awards))
+df <-data.frame(list(ht=report$ht,wt=report$wt))
+cl <-kmeans(df,centers =4)
+
+ggplot(report,aes(x=ht,y=wt)) +
+    geom_point(aes(size=num_awards,col=pos)) + 
+    geom_encircle(data=report[cl$cluster==1,],aes(x=ht,y=wt)) +
+    geom_encircle(data=report[cl$cluster==2,],aes(x=ht,y=wt)) +
+    geom_encircle(data=report[cl$cluster==3,],aes(x=ht,y=wt)) +
+    geom_encircle(data=report[cl$cluster==4,],aes(x=ht,y=wt)) +
+    #geom_encircle(data=report[cl$cluster==5,],aes(x=ht,y=wt)) +
+    geom_smooth(col="black", method = 'loess' , formula='y ~ x') + 
+    geom_text_repel(aes(label=ifelse(num_awards>=20,paste(Player,'-',num_awards),''),color=pos), force=10, show.legend=F) ;
+  
+
+```
+
+
+
+Year and Year Performance of Top Players (more than 20  awards)
+===============================================================
+
+
+```{r}
+top_players <- (report %>% filter(num_awards>=20)  %>% select(Player))
+df <- data %>% filter(Player %in% top_players$Player) %>% arrange(Player,Date) %>% group_by(Player) %>% mutate (cumulative_awards=cumsum(ceiling(Real_value)))
+df_max_awards <- df %>% group_by(Player) %>% summarise(
+  date=max(Date),
+  awards=max(cumulative_awards),
+  exp=year(date)-max(Draft.Year)
+)
+
+years <- order(unique(year(df$Date)))
+
+ggplot(df,aes(x=Date,y=cumulative_awards,col=Player)) + geom_line()+
+  geom_text_repel(data=df_max_awards, aes(x=date,y=awards,label=paste(Player,'- ',exp,' yrs')), force=10,vjust=-2,hjust=1, show.legend=F) + theme(legend.position="none") + labs(y="Cumulative awards",x="Year")
+  
+
+```
+
+Lebron James & Kobe Bryant the most prolific Week
+================================================
+Basketball season starts in October and goes till April, We observe the LeBron James ruthless  at start and end of season while Kobe flourishes in mid. 
+```{r}
+prolific_week <-data %>% filter(Player=='LeBron James'  | Player=='Kobe Bryant') %>% group_by(Player,week=(8+week(Date))%%52) %>% summarise(count=n());
+  ggplot(prolific_week, aes(x=week,y=count,color=Player))+geom_line()+
+  labs(x="Season Week", y="# Awards")
+```
+
+
+
+
+
